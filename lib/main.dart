@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:html';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:sdp_transform/sdp_transform.dart';
 
 void main() {
   runApp(MyApp());
@@ -32,6 +34,9 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  bool _offer = false;
+  RTCPeerConnection _peerConnection;
+  MediaStream _localStream;
   final _localRenderer = new RTCVideoRenderer();
   final _remoteRenderer = new RTCVideoRenderer();
 
@@ -48,12 +53,57 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     initRenderers();
-    _getUserMedia();
+    _createPeerConnection().then((pc) {
+      _peerConnection = pc;
+    });
     super.initState();
   }
 
   initRenderers() async {
     await _localRenderer.initialize();
+  }
+
+  _createPeerConnection() async {
+    Map<String, dynamic> configuration = {
+      'iceServers': [
+        {'url' : 'stun:stun.l.google.com:19302'}
+      ]
+    };
+
+    final Map<String, dynamic> offerSdpConstraints = {
+      "mandatory": {
+        "offerToReceiveAudio": true,
+        "OfferToReceiveVideo" : true,
+      },
+      "optional": [],
+    };
+
+    _localStream = await _getUserMedia();
+
+    RTCPeerConnection pc = await createPeerConnection(configuration, offerSdpConstraints);
+
+    pc.addStream(_localStream);
+
+    pc.onIceCandidate = (e) {
+      if(e.candidate != null) {
+        print(json.encode({
+          'candidate': e.candidate.toString(),
+          'sdpMid': e.sdpMid.toString(),
+          'sdpMlineINdex': e.sdpMlineIndex.toString(),
+        }));
+      }
+    };
+
+    pc.onIceConnectionState = (e) {
+      print(e);
+    };
+
+    pc.onAddStream = (stream) {
+      print('addStream: ' + stream.id);
+      _remoteRenderer.srcObject = stream;
+    };
+
+    return pc;
   }
 
   _getUserMedia() async {
@@ -67,7 +117,50 @@ class _MyHomePageState extends State<MyHomePage> {
     MediaStream stream = await navigator.getUserMedia(constraints);
 
     _localRenderer.srcObject = stream;
+    //_localRenderer.mirror = true;
+
+    return stream;
   }
+
+  void _createAnswer() async {
+    RTCSessionDescription description = await _peerConnection.createAnswer({'offerToReceiveVideo' : 1});
+
+    var session = parse(description.sdp);
+    print(json.encode(session));
+
+    _peerConnection.setLocalDescription(description);
+  }
+
+  void _createOffer() async {
+    RTCSessionDescription description = await _peerConnection.createOffer({'offerToReceiveVideo' : 1});
+    var session = parse(description.sdp);
+    print(json.encode(session));
+    _offer = true;
+
+    _peerConnection.setLocalDescription(description);
+  }
+
+void _setRemoteDescription() async {
+  String jsonString = sdpController.text;
+  dynamic session = await jsonDecode('$jsonString');
+
+  String sdp = write(session, null);
+
+  RTCSessionDescription description = new RTCSessionDescription(sdp, _offer ? 'answer' : 'offer');
+
+  print(description.toMap());
+
+  await _peerConnection.setRemoteDescription(description);
+}
+
+void _setCandidate() async {
+  String jsonString = sdpController.text;
+  dynamic session = await jsonDecode('$jsonString');
+  print(session['candidate']);
+  dynamic candidate = new RTCIceCandidate(session['candidate'], session['sdpMid'], session['sdpMlineINdex']);
+
+  await _peerConnection.addCandidate(candidate);
+}
 
 SizedBox videoRenderers() => SizedBox(
   height: 210,
@@ -97,13 +190,13 @@ Row offerAndAnswerButtons() => Row(
   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
   children: <Widget>[
     RaisedButton(
-      onPressed: null,
+      onPressed: _createOffer,
       child: Text('Offed'),
       color: Colors.amber,
     ),
     RaisedButton(
-      onPressed: null,
-      child: Text('ANswer'),
+      onPressed: _createAnswer,
+      child: Text('Answer'),
       color: Colors.amber,
     )
   ],
@@ -123,12 +216,12 @@ Row sdpCandidateButtons() => Row(
   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
   children: <Widget>[
     RaisedButton(
-      onPressed: null, //_setRemoteDescription, 
+      onPressed: _setRemoteDescription, 
       child: Text('Set Remote desc.'),
       color: Colors.amber,
     ),
       RaisedButton(
-      onPressed: null, //_setCandidateDescription, 
+      onPressed: _setCandidate, 
       child: Text('Set Candidate.'),
       color: Colors.amber,
     ),
